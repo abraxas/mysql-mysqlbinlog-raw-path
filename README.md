@@ -16,6 +16,8 @@
 
 # mysql-mysqlbinlog-raw-path
 
+**Class:** File write
+
 **MySQL Community Server** `mysqlbinlog` `26.7.0` (`06a5c1c`) - Oracle
 
 `mysqlbinlog --raw --read-from-remote-server` copies a Rotate event `new_log_ident` into `log_file_name` with no basename check. The next FORMAT_DESCRIPTION event `my_fopen`s that path and writes `BINLOG_MAGIC` plus the event. A hostile dump that sends a real Rotate ident with `/` writes that file as the client UID.
@@ -25,6 +27,7 @@
 | | |
 |---|---|
 | ID | no CVE yet |
+| Class | **File write** (client `--raw` BINLOG_MAGIC) |
 | CWE | [CWE-22](https://cwe.mitre.org/data/definitions/22.html) |
 | CVSS | **High: 8.1** `CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:N` |
 | Product | [MySQL Community Server](https://github.com/mysql/mysql-server) `mysqlbinlog` |
