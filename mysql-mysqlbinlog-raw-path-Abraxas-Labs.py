@@ -233,6 +233,13 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 LAB = HERE / "lab"
-os.chdir(LAB)
-raise SystemExit(subprocess.call([str(LAB / "run.sh"), *sys.argv[1:]]))
+
+
+def main() -> int:
+    os.chdir(LAB)
+    return subprocess.call([str(LAB / "run.sh"), *sys.argv[1:]])
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
 

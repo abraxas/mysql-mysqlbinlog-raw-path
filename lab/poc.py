@@ -224,33 +224,74 @@ def _cprint(*args, **kwargs):
 print_abraxas_banner()
 _builtins.print = _cprint
 
-"""Prove mysqlbinlog 26.7.0 --raw -R writes BINLOG_MAGIC outside cwd."""
-
+# Prove mysqlbinlog 26.7.0 --raw -R writes BINLOG_MAGIC outside cwd.
 
 import os
 import subprocess
-import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
-WITNESS = "MYSQL-BINLOG-RAW-WITNESS"
 LABEL = "mysql-mysqlbinlog-raw-path"
+WITNESS = "MYSQL-BINLOG-RAW-WITNESS"
+IMAGE_TAG = "mysql:26.7.0"
+DUMP_VERSION = "26.7.0"
 COMPOSE_PROJECT = os.environ.get("COMPOSE_PROJECT_NAME", LABEL)
+DUMP_SERVICE = "dump"
+STUB_SERVICE = "stub"
+MYSQLBINLOG = "/usr/libexec/mysqlsh/mysqlbinlog"
+REQUESTED_LOG = "mysql-bin.000001"
+CONTROL_NAME = "mysql-bin.000001"
+CONTROL_PORT = 3306
+TRAVERSAL_PORT = 3307
+DUMP_USER = "root"
+DUMP_TIMEOUT_S = 40
+SETTLE_S = 0.4
+MTIME_SLACK_S = 5
+BINLOG_MAGIC = b"\xfebin"
+CONTAINER_WORK = "/work"
+CONTAINER_BINLOGS = "/work/binlogs"
+CONTAINER_ORACLE = "/work/oracle"
 HERE = Path(__file__).resolve().parent
 WORK = HERE / "work"
 ORACLE = WORK / "oracle"
 BINLOGS = WORK / "binlogs"
-CONTROL_NAME = "mysql-bin.000001"
 TRAVERSAL_PATH = ORACLE / WITNESS
-IMAGE_TAG = "mysql:26.7.0"
-MYSQLBINLOG = "/usr/libexec/mysqlsh/mysqlbinlog"
-DUMP_TIMEOUT = 40
-BINLOG_MAGIC = b"\xfe\x62\x69\x6e"
-REQUESTED_LOG = "mysql-bin.000001"
+STUB_LOG_KEYS = (
+    "query ",
+    "binlog-dump ",
+    "binlog-event ",
+    "binlog-dump-eof ",
+    "dump-plan ",
+)
+
+
+@dataclass(frozen=True)
+class DumpRun:
+    rc: int | None
+    stdout: str
+    stderr: str
 
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def fail(reason: str) -> None:
+    log(f"FAIL {LABEL} {reason} {WITNESS}")
+    raise SystemExit(1)
+
+
+def yes_no(ok: bool) -> str:
+    return "yes" if ok else "no"
+
+
+def decode_pipe(blob: bytes | str | None) -> str:
+    if blob is None:
+        return ""
+    if isinstance(blob, bytes):
+        return blob.decode("utf-8", "replace")
+    return blob
 
 
 def compose(*args: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
@@ -264,13 +305,12 @@ def compose(*args: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
 
 
 def dump_version() -> str:
-    proc = compose("exec", "-T", "dump", MYSQLBINLOG, "--version", timeout=30)
+    proc = compose("exec", "-T", DUMP_SERVICE, MYSQLBINLOG, "--version", timeout=30)
     text = ((proc.stdout or "") + (proc.stderr or "")).strip()
     log(f"mysqlbinlog-version rc={proc.returncode} text={text!r}")
-    if proc.returncode != 0 or "26.7.0" not in text:
-        log(f"FAIL {LABEL} dump-version-mismatch image={IMAGE_TAG} {text!r} {WITNESS}")
-        raise SystemExit(1)
-    return text.splitlines()[-1] if text else "mysqlbinlog 26.7.0"
+    if proc.returncode != 0 or DUMP_VERSION not in text:
+        fail(f"dump-version-mismatch image={IMAGE_TAG} {text!r}")
+    return text.splitlines()[-1] if text else f"mysqlbinlog {DUMP_VERSION}"
 
 
 def ensure_dirs() -> None:
@@ -279,6 +319,8 @@ def ensure_dirs() -> None:
 
 
 def wipe_outputs() -> None:
+    if not WORK.exists():
+        return
     for path in WORK.rglob("*"):
         if not path.is_file():
             continue
@@ -313,29 +355,33 @@ def read_head(path: Path, n: int = 32) -> bytes:
         return b""
 
 
-def run_dump(port: int, label: str) -> tuple[int | None, str, str]:
-    cmd = [
+def mysqlbinlog_cmd(port: int) -> list[str]:
+    return [
         "docker",
         "compose",
         "-p",
         COMPOSE_PROJECT,
         "exec",
         "-T",
-        "dump",
+        DUMP_SERVICE,
         MYSQLBINLOG,
         "--raw",
         "--read-from-remote-server",
         "--protocol=TCP",
         "--ssl-mode=DISABLED",
         "-h",
-        "stub",
+        STUB_SERVICE,
         "-P",
         str(port),
         "-u",
-        "root",
+        DUMP_USER,
         "--password=",
         REQUESTED_LOG,
     ]
+
+
+def run_dump(port: int, label: str) -> DumpRun:
+    cmd = mysqlbinlog_cmd(port)
     log(f"run-{label} port={port} cmd={' '.join(cmd)}")
     try:
         proc = subprocess.run(
@@ -343,22 +389,20 @@ def run_dump(port: int, label: str) -> tuple[int | None, str, str]:
             cwd=HERE,
             text=True,
             capture_output=True,
-            timeout=DUMP_TIMEOUT,
+            timeout=DUMP_TIMEOUT_S,
         )
-        return proc.returncode, proc.stdout or "", proc.stderr or ""
+        return DumpRun(proc.returncode, proc.stdout or "", proc.stderr or "")
     except subprocess.TimeoutExpired as exc:
-        out = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-        err = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-        return None, out, err + "\nTIMEOUT"
+        return DumpRun(None, decode_pipe(exc.stdout), decode_pipe(exc.stderr) + "\nTIMEOUT")
 
 
 def stub_logs() -> str:
-    proc = compose("logs", "--no-color", "stub", timeout=30)
+    proc = compose("logs", "--no-color", STUB_SERVICE, timeout=30)
     return ((proc.stdout or "") + (proc.stderr or "")).strip()
 
 
 def container_ls(path: str) -> str:
-    proc = compose("exec", "-T", "dump", "ls", "-la", path, timeout=20)
+    proc = compose("exec", "-T", DUMP_SERVICE, "ls", "-la", path, timeout=20)
     blob = ((proc.stdout or "") + (proc.stderr or "")).strip()
     log(f"ioc container-ls path={path} rc={proc.returncode} text={blob!r}")
     return blob
@@ -366,6 +410,33 @@ def container_ls(path: str) -> str:
 
 def has_magic(data: bytes) -> bool:
     return data.startswith(BINLOG_MAGIC) or BINLOG_MAGIC in data
+
+
+def log_dump(label: str, run: DumpRun) -> None:
+    log(f"ioc {label}-rc={run.rc!s}")
+    log(f"ioc {label}-stderr={run.stderr[-2000:]!r}")
+    log(f"ioc {label}-stdout-head={run.stdout[:400]!r}")
+    log(f"ioc {label}-files={list_rel(WORK)}")
+    container_ls(CONTAINER_WORK)
+    container_ls(CONTAINER_BINLOGS)
+    container_ls(CONTAINER_ORACLE)
+
+
+def cwd_witness_hits() -> list[str]:
+    return [
+        str(path.relative_to(WORK))
+        for path in WORK.rglob("*")
+        if path.is_file() and path.name == WITNESS and path.parent != ORACLE
+    ]
+
+
+def stub_log_tail(logs: str) -> str:
+    interesting = [
+        line
+        for line in logs.splitlines()
+        if any(key in line for key in STUB_LOG_KEYS)
+    ]
+    return "\n".join(interesting[-160:]) if interesting else "(none)"
 
 
 def main() -> int:
@@ -376,23 +447,17 @@ def main() -> int:
     wipe_outputs()
     log(f"ioc pre-control files={list_rel(WORK)}")
 
-    c_rc, c_out, c_err = run_dump(3306, "control")
-    time.sleep(0.4)
-    log(f"ioc control-rc={c_rc!s}")
-    log(f"ioc control-stderr={c_err[-2000:]!r}")
-    log(f"ioc control-stdout-head={c_out[:400]!r}")
-    log(f"ioc control-files={list_rel(WORK)}")
-    container_ls("/work")
-    container_ls("/work/binlogs")
-    container_ls("/work/oracle")
+    control = run_dump(CONTROL_PORT, "control")
+    time.sleep(SETTLE_S)
+    log_dump("control", control)
 
     control_file = find_control_basename()
-    control_sql_yes = control_file is not None
+    control_basename_yes = control_file is not None
     control_oracle_absent = not TRAVERSAL_PATH.exists()
     control_head = read_head(control_file) if control_file else b""
     control_magic = has_magic(control_head) if control_file else False
     log(
-        f"ioc control-basename-exists={control_sql_yes} "
+        f"ioc control-basename-exists={control_basename_yes} "
         f"path={control_file.relative_to(WORK) if control_file else 'missing'}"
     )
     log(f"ioc control-oracle-absent={control_oracle_absent}")
@@ -401,45 +466,21 @@ def main() -> int:
     if TRAVERSAL_PATH.exists():
         TRAVERSAL_PATH.unlink()
     started = time.time()
-    t_rc, t_out, t_err = run_dump(3307, "traversal")
-    time.sleep(0.4)
-    log(f"ioc traversal-rc={t_rc!s}")
-    log(f"ioc traversal-stderr={t_err[-2000:]!r}")
-    log(f"ioc traversal-stdout-head={t_out[:400]!r}")
-    log(f"ioc traversal-files={list_rel(WORK)}")
-    container_ls("/work")
-    container_ls("/work/binlogs")
-    container_ls("/work/oracle")
+    traversal = run_dump(TRAVERSAL_PORT, "traversal")
+    time.sleep(SETTLE_S)
+    log_dump("traversal", traversal)
 
     logs = stub_logs()
-    interesting = [
-        line
-        for line in logs.splitlines()
-        if any(
-            key in line
-            for key in (
-                "query ",
-                "binlog-dump ",
-                "binlog-event ",
-                "binlog-dump-eof ",
-                "dump-plan ",
-            )
-        )
-    ]
     log("ioc stub-logs-tail <<<")
-    log("\n".join(interesting[-160:]) if interesting else "(none)")
+    log(stub_log_tail(logs))
     log("ioc stub-logs-tail >>>")
 
     traversal_exists = TRAVERSAL_PATH.is_file()
     traversal_head = read_head(TRAVERSAL_PATH, 16) if traversal_exists else b""
     mtime_ok = False
     if traversal_exists:
-        mtime_ok = TRAVERSAL_PATH.stat().st_mtime >= (started - 5)
-    cwd_hits = [
-        str(p.relative_to(WORK))
-        for p in WORK.rglob("*")
-        if p.is_file() and p.name == WITNESS and p.parent != ORACLE
-    ]
+        mtime_ok = TRAVERSAL_PATH.stat().st_mtime >= (started - MTIME_SLACK_S)
+    cwd_hits = cwd_witness_hits()
     merely_cwd = (not traversal_exists) and bool(cwd_hits)
     dump_like = has_magic(traversal_head) if traversal_exists else False
     log(f"ioc traversal-exists={traversal_exists} path=work/oracle/{WITNESS}")
@@ -448,21 +489,18 @@ def main() -> int:
     if traversal_exists:
         log(f"ioc traversal-head={traversal_head!r} size={TRAVERSAL_PATH.stat().st_size}")
 
-    control_ok = control_sql_yes and control_oracle_absent and control_magic
-    traversal_ok = (
-        traversal_exists and mtime_ok and dump_like and not merely_cwd
-    )
-    ok = control_ok and traversal_ok and "26.7.0" in version
+    control_ok = control_basename_yes and control_oracle_absent and control_magic
+    traversal_ok = traversal_exists and mtime_ok and dump_like and not merely_cwd
+    ok = control_ok and traversal_ok and DUMP_VERSION in version
     status = "SUCCESS" if ok else "FAIL"
-    control_flag = "yes" if control_ok else "no"
-    traversal_flag = "yes" if traversal_ok else "no"
     log(
-        f"{status} {LABEL} control-basename={control_flag} traversal-outside={traversal_flag} "
-        f"dump=26.7.0 image={IMAGE_TAG} {WITNESS}"
+        f"{status} {LABEL} control-basename={yes_no(control_ok)} "
+        f"traversal-outside={yes_no(traversal_ok)} "
+        f"dump={DUMP_VERSION} image={IMAGE_TAG} {WITNESS}"
     )
     return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
 

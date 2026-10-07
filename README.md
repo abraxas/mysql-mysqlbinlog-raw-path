@@ -16,8 +16,8 @@
 
 # mysql-mysqlbinlog-raw-path
 
-**Class:** File write
-**Reach:** Remote
+**Class:** File write (client)
+**Reach:** Remote (UI:R)
 
 **MySQL Community Server** `mysqlbinlog` `26.7.0` (`06a5c1c`) - Oracle
 
@@ -80,7 +80,7 @@ cd lab
 ./run.sh
 ```
 
-Image `mysql:26.7.0`. Binary `/usr/libexec/mysqlsh/mysqlbinlog` Ver 26.7.0 (not on PATH in that image). Control stub: fake Rotate `mysql-bin.000001` plus FD writes `work/mysql-bin.000001`. Traversal stub: matching fake Rotate, real Rotate ident `/work/oracle/MYSQL-BINLOG-RAW-WITNESS`, FD writes that path (`BINLOG_MAGIC`). Published `127.0.0.1:18620` / `18621`. Bind it to loopback. No `--result-file`.
+Image `mysql:26.7.0`. Binary `/usr/libexec/mysqlsh/mysqlbinlog` Ver 26.7.0 (not on PATH in that image). Control stub: fake Rotate `mysql-bin.000001` plus FD writes `work/mysql-bin.000001`. Traversal stub: matching fake Rotate, real Rotate ident `/work/oracle/MYSQL-BINLOG-RAW-WITNESS`, FD writes that path (`BINLOG_MAGIC`). Published `127.0.0.1:18620` / `18621`. Bind it to loopback. File write of binlog bytes, not RCE. No `--result-file`.
 
 ```text
 control-basename=yes
