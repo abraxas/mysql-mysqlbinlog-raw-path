@@ -17,6 +17,7 @@
 # mysql-mysqlbinlog-raw-path
 
 **Class:** File write
+**Reach:** Remote
 
 **MySQL Community Server** `mysqlbinlog` `26.7.0` (`06a5c1c`) - Oracle
 
@@ -28,6 +29,7 @@
 |---|---|
 | ID | no CVE yet |
 | Class | **File write** (client `--raw` BINLOG_MAGIC) |
+| Reach | **Remote** (victim runs `mysqlbinlog --raw -R` against an attacker dump; UI:R) |
 | CWE | [CWE-22](https://cwe.mitre.org/data/definitions/22.html) |
 | CVSS | **High: 8.1** `CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:N` |
 | Product | [MySQL Community Server](https://github.com/mysql/mysql-server) `mysqlbinlog` |
